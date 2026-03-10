@@ -54,7 +54,16 @@ with tab_dive:
     sales_velocity = st.sidebar.number_input("Daily Sales Velocity (Units/Day)", min_value=1.0, value=15.0, key="sku_velocity")
     current_inventory = st.sidebar.number_input("Current Inventory Level (Units)", min_value=1, value=150, key="sku_inv")
     seasonality = st.sidebar.select_slider("Seasonality Factor", options=[1.0, 1.5, 2.0, 2.5, 3.0], value=1.5, key="sku_season")
-    iterations = st.sidebar.selectbox("Sim Iterations", [500, 1000, 2000], index=1, key="sku_iter")
+    iterations = st.sidebar.selectbox("Sim Iterations", [10000, 50000, 100000], index=2, key="sku_iter")
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### SKU Physics & Timelines")
+    length_cm = st.sidebar.number_input("Length (cm)", min_value=1.0, value=40.0, key="sku_len")
+    width_cm = st.sidebar.number_input("Width (cm)", min_value=1.0, value=30.0, key="sku_wid")
+    height_cm = st.sidebar.number_input("Height (cm)", min_value=1.0, value=20.0, key="sku_hgt")
+    weight_kg = st.sidebar.number_input("Weight (kg)", min_value=0.1, value=5.0, key="sku_wgt")
+    season_deadline_days = st.sidebar.number_input("Season Deadline (Days)", min_value=1, value=45, key="sku_dl")
+    import_duty_pct = st.sidebar.number_input("Import Duty %", min_value=0.0, max_value=1.0, value=0.20, key="sku_duty")
 
     # Run Simulation (Using unified signature)
     res = run_simulation_v2(
@@ -65,8 +74,14 @@ with tab_dive:
         item_retail_price=item_retail_price,
         base_unit_cost=base_unit_cost,
         order_qty=order_qty,
+        length_cm=length_cm,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        weight_kg=weight_kg,
+        season_deadline_days=season_deadline_days,
         seasonality_factor=seasonality,
-        iterations=iterations
+        iterations=iterations,
+        import_duty_pct=import_duty_pct
     )
     opt = res["optimal"]
 
@@ -80,7 +95,7 @@ with tab_dive:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Stockout Risk", f"{opt['risk_pct']:.1f}%")
     c2.metric("True Cost / Unit", f"${opt['true_cost']:,.2f}")
-    c3.metric("Expected Revenue Loss", f"${opt['avg_revenue_loss']:,.0f}")
+    c3.metric("Expected Margin Loss", f"${opt['expected_margin_loss']:,.0f}")
     c4.metric("Risk-Adjusted Margin", f"${opt['risk_adjusted_margin']:,.0f}")
 
     # Charts
@@ -109,7 +124,7 @@ with tab_triage:
             df_erp = pd.read_csv(uploaded_file)
             
             # Verify required columns exist
-            required_columns = ['SKU_ID', 'Supplier_Tier', 'Current_Stock', 'Daily_Velocity', 'Unit_Cost', 'Retail_Price', 'Order_Qty']
+            required_columns = ['SKU_ID', 'Supplier_Tier', 'Current_Stock', 'Daily_Velocity', 'Unit_Cost', 'Retail_Price', 'Order_Qty', 'Length_cm', 'Width_cm', 'Height_cm', 'Weight_kg', 'Season_Deadline_Days']
             if not all(col in df_erp.columns for col in required_columns):
                 st.error(f"CSV Schema Error. Required columns: {', '.join(required_columns)}")
             else:
@@ -120,7 +135,6 @@ with tab_triage:
                         # Lookup params based on Tier (A, B, C)
                         p = TIER_PARAMS.get(tier, TIER_PARAMS["C"]) # Default to C if unknown
                         
-                        # Clean call (removed suspected ghost arguments)
                         sim = run_simulation_v2(
                             avg_lead_time=p["avg_lt"],
                             std_dev=p["std_lt"],
@@ -129,16 +143,25 @@ with tab_triage:
                             item_retail_price=row["Retail_Price"],
                             base_unit_cost=row["Unit_Cost"],
                             order_qty=row["Order_Qty"],
+                            length_cm=row["Length_cm"],
+                            width_cm=row["Width_cm"],
+                            height_cm=row["Height_cm"],
+                            weight_kg=row["Weight_kg"],
+                            season_deadline_days=row["Season_Deadline_Days"],
                             seasonality_factor=1.5,
-                            iterations=500
+                            iterations=100000
                         )
                         best = sim["optimal"]
                         results.append({
                             "SKU_ID": row["SKU_ID"],
                             "Stockout_Risk_%": best["risk_pct"],
-                            "Expected_Loss": best["avg_revenue_loss"],
+                            "Expected_Loss": best["expected_margin_loss"],
+                            "Freight_Cost": best["freight_cost"],
+                            "Duty_Cost": best["duty_cost"],
+                            "Expected_Holding_Cost": best["expected_holding_cost"],
+                            "Expected_Markdown_Loss": best["expected_markdown_loss"],
+                            "Net_Margin_ROI": best["net_roi"],
                             "Optimal_Freight": best["mode"],
-                            "Net_ROI": best["net_roi"],
                             "Unit_Cost": row["Unit_Cost"]
                         })
                 
@@ -149,7 +172,7 @@ with tab_triage:
                 high_risk_count = len(df_results[df_results["Stockout_Risk_%"] > 40])
                 
                 col_t1, col_t2 = st.columns(2)
-                col_t1.metric("Portfolio Total Revenue at Risk", f"${total_at_risk:,.0f}", delta=f"{high_risk_count} High-Risk SKUs", delta_color="inverse")
+                col_t1.metric("Portfolio Total Margin at Risk", f"${total_at_risk:,.0f}", delta=f"{high_risk_count} High-Risk SKUs", delta_color="inverse")
                 
                 st.markdown("---")
                 st.subheader("🚨 Critical Action Board")
@@ -164,7 +187,11 @@ with tab_triage:
                 # PROFESSIONAL FORMATTING for Executive Presentation
                 df_action['Stockout_Risk_%'] = df_action['Stockout_Risk_%'].apply(lambda x: f"{x:.1f}%")
                 df_action['Expected_Loss'] = df_action['Expected_Loss'].apply(lambda x: f"${x:,.0f}")
-                df_action['Net_ROI'] = df_action['Net_ROI'].apply(lambda x: f"${x:,.0f}")
+                df_action['Freight_Cost'] = df_action['Freight_Cost'].apply(lambda x: f"${x:,.0f}")
+                df_action['Duty_Cost'] = df_action['Duty_Cost'].apply(lambda x: f"${x:,.0f}")
+                df_action['Expected_Holding_Cost'] = df_action['Expected_Holding_Cost'].apply(lambda x: f"${x:,.0f}")
+                df_action['Expected_Markdown_Loss'] = df_action['Expected_Markdown_Loss'].apply(lambda x: f"${x:,.0f}")
+                df_action['Net_Margin_ROI'] = df_action['Net_Margin_ROI'].apply(lambda x: f"${x:,.0f}")
                 df_action['Unit_Cost'] = df_action['Unit_Cost'].apply(lambda x: f"${x:,.2f}")
                 
                 st.dataframe(df_action, use_container_width=True)
@@ -181,8 +208,8 @@ with tab_triage:
         st.markdown("""
         **Expected CSV Format:**
         ```csv
-        SKU_ID,Supplier_Tier,Current_Stock,Daily_Velocity,Unit_Cost,Retail_Price,Order_Qty
-        SKU-001,C,150,15,15,100,1000
-        SKU-002,A,50,20,45,150,500
+        SKU_ID,Supplier_Tier,Current_Stock,Daily_Velocity,Unit_Cost,Retail_Price,Order_Qty,Length_cm,Width_cm,Height_cm,Weight_kg,Season_Deadline_Days
+        SKU-001,C,150,15,15,100,1000,40,30,20,5,45
+        SKU-002,A,50,20,45,150,500,50,40,30,12,60
         ```
         """)
